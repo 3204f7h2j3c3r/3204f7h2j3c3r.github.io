@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kotlin Code Editor</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; font-family: sans-serif; background: #1e1e1e; color: #fff; }
+    header { height: 45px; background: #2d2d2d; display: flex; align-items: center; justify-content: space-between; padding: 0 15px; border-bottom: 1px solid #3c3c3c; }
+    .title { font-weight: bold; color: #7f52ff; font-size: 16px; }
+    .container { display: flex; flex: 1; overflow: hidden; }
+    #editor-container { width: 60%; height: 100%; }
+    #preview-container { width: 40%; height: 100%; background: #181818; border-left: 1px solid #3c3c3c; display: flex; flex-direction: column; }
+    .preview-header { padding: 10px; background: #252526; font-size: 13px; color: #cccccc; border-bottom: 1px solid #3c3c3c; font-weight: bold; display: flex; justify-content: space-between; }
+    #output { flex: 1; padding: 15px; font-family: 'Courier New', monospace; font-size: 13px; color: #00ff66; white-space: pre-wrap; overflow-y: auto; line-height: 1.4; }
+    
+    /* 全角スペースの赤色ハイライト表示 */
+    .zenkaku-space {
+      background-color: rgba(255, 0, 0, 0.4) !important;
+      border: 1px dashed #ff4d4d !important;
+    }
+  </style>
+  <!-- Monaco Editor -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs/loader.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="title">Kotlin Web Editor</div>
+  </header>
+  <div class="container">
+    <div id="editor-container"></div>
+    <div id="preview-container">
+      <div class="preview-header">
+        <span>Live Output / 実行結果</span>
+        <span id="status" style="font-size:11px; color:#888;">待機中</span>
+      </div>
+      <div id="output">準備中...</div>
+    </div>
+  </div>
+
+  <script>
+    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.38.0/min/vs' }});
+
+    let editor;
+    let decorations = [];
+
+    require(['vs/editor/editor.main'], function() {
+      editor = monaco.editor.create(document.getElementById('editor-container'), {
+        value: `fun main() {\n    val greeting = "Hello, Kotlin!"\n    println(greeting)\n    \n    // ↓ここに全角スペースを入れると赤く可視化されます\n      val num = 100\n    println("Value: $num")\n}`,
+        language: 'kotlin',
+        theme: 'vs-dark',
+        automaticLayout: true,
+        autoIndent: 'full',
+        tabSize: 4,
+        insertSpaces: true
+      });
+
+      // 全角スペース (U+3000) ハイライト
+      function updateZenkakuHighlight() {
+        const model = editor.getModel();
+        if (!model) return;
+        const text = model.getValue();
+        const regex = /\u3000/g;
+        let match;
+        const newDecorations = [];
+
+        while ((match = regex.exec(text)) !== null) {
+          const startPos = model.getPositionAt(match.index);
+          const endPos = model.getPositionAt(match.index + 1);
+          newDecorations.push({
+            range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+            options: { inlineClassName: 'zenkaku-space' }
+          });
+        }
+        decorations = editor.deltaDecorations(decorations, newDecorations);
+      }
+
+      // リアルタイム実行（入力停止から0.8秒後）
+      let timer = null;
+      editor.onDidChangeModelContent(() => {
+        updateZenkakuHighlight();
+        clearTimeout(timer);
+        timer = setTimeout(runKotlinCode, 800);
+      });
+
+      updateZenkakuHighlight();
+      runKotlinCode();
+    });
+
+    // Kotlin APIによるコンパイル実行処理
+    function runKotlinCode() {
+      const outputDiv = document.getElementById('output');
+      const statusSpan = document.getElementById('status');
+      const code = editor ? editor.getValue() : '';
+
+      statusSpan.innerText = '実行中...';
+      statusSpan.style.color = '#ffaa00';
+
+      // Kotlin公式プレイグラウンドの公開実行エンドポイント
+      fetch('https://api.kotlinlang.org/eval', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        },
+        body: 'code=' + encodeURIComponent(code)
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTPエラー Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        statusSpan.innerText = '完了';
+        statusSpan.style.color = '#00ff66';
+
+        if (data.exception) {
+          outputDiv.style.color = '#ff6b6b';
+          outputDiv.innerText = '[実行時エラー / コンパイルエラー]\n' + data.exception.message;
+        } else if (data.text) {
+          outputDiv.style.color = '#00ff66';
+          outputDiv.innerText = data.text;
+        } else {
+          outputDiv.style.color = '#cccccc';
+          outputDiv.innerText = '（出力結果はありません）';
+        }
+      })
+      .catch(error => {
+        statusSpan.innerText = 'エラー発生';
+        statusSpan.style.color = '#ff6b6b';
+        outputDiv.style.color = '#ffaa00';
+        
+        outputDiv.innerText = 
+          '【通信エラーが発生しました】\n' +
+          '詳細: ' + error.message + '\n\n' +
+          '■ 考えられる主な原因:\n' +
+          '1. HTMLファイルを「ローカルファイル (file://...)」として直接開いている\n' +
+          '   ※ ブラウザのセキュリティ仕様により、外部APIへの送信が遮断されます。\n' +
+          '2. ネットワーク設定やセキュリティソフト（学校・職場のフィルター等）により API (api.kotlinlang.org) への接続が拒否されている\n' +
+          '3. オフライン状態になっている';
+      });
+    }
+  </script>
+</body>
+</html>
